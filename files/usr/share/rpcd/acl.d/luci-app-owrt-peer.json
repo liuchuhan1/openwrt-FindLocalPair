@@ -1,0 +1,20 @@
+{
+	"luci-app-owrt-peer": {
+		"description": "Grant access to OWRT Peer configuration",
+		"read": {
+			"uci": [ "owrt-peer" ],
+			"file": {
+				"/tmp/owrt_peer_ip": [ "read" ],
+				"/tmp/owrt_peer_state": [ "read" ],
+				"/tmp/owrt_peer_lastseen": [ "read" ],
+				"/tmp/owrt-peer.log": [ "read" ]
+			}
+		},
+		"write": {
+			"uci": [ "owrt-peer" ],
+			"file": {
+				"/etc/init.d/owrt-peer": [ "exec" ]
+			}
+		}
+	}
+}

@@ -45,6 +45,8 @@ define Package/luci-app-owrt-peer/install
 
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/model/cbi/owrt-peer
 	$(INSTALL_DATA) ./files/usr/lib/lua/luci/model/cbi/owrt-peer/owrt-peer.lua $(1)/usr/lib/lua/luci/model/cbi/owrt-peer/owrt-peer.lua
+	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
+	$(INSTALL_DATA) ./files/usr/share/rpcd/acl.d/luci-app-owrt-peer.json $(1)/usr/share/rpcd/acl.d/luci-app-owrt-peer.json
 endef
 
 $(eval $(call BuildPackage,luci-app-owrt-peer))
