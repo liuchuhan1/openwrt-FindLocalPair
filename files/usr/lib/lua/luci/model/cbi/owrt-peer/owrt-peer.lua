@@ -1,3 +1,4 @@
+local _ = luci.i18n.translate
 local fs = require "nixio.fs"
 local sys = require "luci.sys"
 
