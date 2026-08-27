@@ -1,0 +1,67 @@
+name: Build OWRT Peer IPK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64_cortex-a53
+            sdk_url: https://downloads.openwrt.org/releases/23.05.5/targets/bcm27xx/bcm2711/openwrt-sdk-23.05.5-bcm27xx-bcm2711_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libncurses5-dev libncursesw5-dev \
+            zlib1g-dev gawk git gettext libssl-dev xsltproc rsync wget unzip \
+            python3 python3-distutils file
+
+      - name: Download SDK
+        run: |
+          wget -q "${{ matrix.sdk_url }}" -O sdk.tar.xz
+          tar -xJf sdk.tar.xz
+          mv openwrt-sdk-* sdk
+
+      - name: Setup package
+        run: |
+          mkdir -p sdk/package/luci-app-owrt-peer
+          cp Makefile sdk/package/luci-app-owrt-peer/
+          cp -r files sdk/package/luci-app-owrt-peer/
+
+      - name: Update feeds
+        run: |
+          cd sdk
+          ./scripts/feeds update -a
+
+      - name: Configure
+        run: |
+          cd sdk
+          echo 'CONFIG_PACKAGE_luci-app-owrt-peer=y' > .config
+          make defconfig
+
+      - name: Compile
+        run: |
+          cd sdk
+          make package/luci-app-owrt-peer/compile V=s -j$(nproc)
+
+      - name: Find IPK
+        id: find-ipk
+        run: |
+          IPK_PATH=$(find sdk/bin/packages/ -name "luci-app-owrt-peer_*.ipk" | head -n1)
+          echo "ipk_path=$IPK_PATH" >> $GITHUB_OUTPUT
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: luci-app-owrt-peer-${{ matrix.arch }}
+          path: ${{ steps.find-ipk.outputs.ipk_path }}
