@@ -1,0 +1,65 @@
+#!/bin/sh
+PEER_IP_FILE="/tmp/owrt_peer_ip"
+PEER_LASTSEEN="/tmp/owrt_peer_lastseen"
+PEER_FAIL="/tmp/owrt_peer_failcount"
+STATE_FILE="/tmp/owrt_peer_state"
+
+MODE=$(uci get owrt-peer.main.mode 2>/dev/null || echo "scan")
+TOKEN=$(uci get owrt-peer.main.token 2>/dev/null || echo "")
+PEER_IP=$(uci get owrt-peer.main.peer_ip 2>/dev/null || echo "")
+IFACE=$(uci get owrt-peer.main.iface 2>/dev/null || echo "auto")
+
+if [ "$IFACE" = "auto" ]; then
+    for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -v lo); do
+        has10=$(ip addr show "$iface" 2>/dev/null | grep "inet 10\.")
+        if [ -n "$has10" ]; then
+            IFACE="$iface"
+            break
+        fi
+    done
+    [ "$IFACE" = "auto" ] && IFACE="br-lan"
+fi
+
+MY_IP=$(ip addr show "$IFACE" 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1 | head -n1)
+[ -z "$MY_IP" ] && MY_IP=$(ifconfig "$IFACE" 2>/dev/null | grep "inet addr" | sed 's/.*inet addr://' | awk '{print $1}' | head -n1)
+
+peer_ip=$(cat "$PEER_IP_FILE" 2>/dev/null)
+last_seen=$(cat "$PEER_LASTSEEN" 2>/dev/null)
+state=$(cat "$STATE_FILE" 2>/dev/null || echo "unknown")
+fail_count=$(cat "$PEER_FAIL" 2>/dev/null || echo 0)
+now=$(date +%s)
+
+echo "========================================"
+echo "  OWRT-PEER 状态查询"
+echo "========================================"
+echo "  本机模式: $MODE"
+echo "  本机接口: $IFACE"
+echo "  本机IP:   ${MY_IP:-获取失败}"
+echo "  密钥长度: ${#TOKEN}位"
+echo "  当前状态: $state"
+[ "$MODE" = "manual" ] && echo "  静态对端: ${PEER_IP:-未配置}"
+echo ""
+
+if [ -z "$peer_ip" ]; then
+    echo "  对方IP:   [未发现]"
+    echo "  最后通信: --"
+    echo "  失败计数: $fail_count"
+else
+    if [ -n "$last_seen" ]; then
+        diff=$((now - last_seen))
+        if [ "$diff" -lt 60 ]; then
+            status_str="${diff}秒前 (正常)"
+        elif [ "$diff" -lt 300 ]; then
+            status_str="${diff}秒前 (延迟)"
+        else
+            status_str="${diff}秒前 (失联)"
+        fi
+    else
+        status_str="未知"
+    fi
+    echo "  对方IP:   $peer_ip"
+    echo "  最后通信: $status_str"
+    echo "  失败计数: $fail_count"
+fi
+echo "========================================"
+[ -n "$peer_ip" ] && echo "PEER_IP=$peer_ip"

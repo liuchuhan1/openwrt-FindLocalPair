@@ -1,0 +1,18 @@
+#!/bin/sh
+uci -q get owrt-peer.main >/dev/null 2>&1 || {
+    uci set owrt-peer.main=owrt-peer
+    uci set owrt-peer.main.enabled='0'
+    uci set owrt-peer.main.mode='scan'
+    uci set owrt-peer.main.token=''
+    uci set owrt-peer.main.heartbeat='30'
+    uci set owrt-peer.main.iface='auto'
+    uci set owrt-peer.main.peer_ip=''
+    uci set owrt-peer.main.port='9876'
+    uci set owrt-peer.main.fail_max='3'
+    uci set owrt-peer.main.scan_net='10.0.0.0/17'
+    uci set owrt-peer.main.concurrent='200'
+    uci set owrt-peer.main.ping_wait='1'
+    uci commit owrt-peer
+}
+rm -rf /tmp/luci-indexcache /tmp/luci-modulecache
+exit 0
