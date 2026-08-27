@@ -41,13 +41,38 @@ log() {
 
 find_iface() {
     local configured="$1"
+    
+    # 如果配置了具体接口且存在，直接用
     if [ "$configured" != "auto" ] && [ -n "$configured" ]; then
         if ip link show "$configured" >/dev/null 2>&1; then
             echo "$configured"
             return 0
         fi
     fi
+    
     local iface
+    
+    # 第一步：优先查找常见外网/无线客户端接口
+    for iface in wwan wan wlan0 wlan1 phy0-sta0 phy1-sta0 wwan0 wwan1; do
+        if ip link show "$iface" >/dev/null 2>&1; then
+            local has10=$(ip addr show "$iface" 2>/dev/null | grep "inet 10\.")
+            if [ -n "$has10" ]; then
+                echo "$iface"
+                return 0
+            fi
+        fi
+    done
+    
+    # 第二步：查找所有有 10.x IP 的接口，但排除 VPN/隧道类接口
+    for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -v lo | grep -v '^wg' | grep -v '^tun' | grep -v '^tap'); do
+        local has10=$(ip addr show "$iface" 2>/dev/null | grep "inet 10\.")
+        if [ -n "$has10" ]; then
+            echo "$iface"
+            return 0
+        fi
+    done
+    
+    # 第三步：兜底，任何有 10.x 的接口
     for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -v lo); do
         local has10=$(ip addr show "$iface" 2>/dev/null | grep "inet 10\.")
         if [ -n "$has10" ]; then
@@ -55,9 +80,10 @@ find_iface() {
             return 0
         fi
     done
+    
+    # 最终兜底 br-lan
     echo "br-lan"
 }
-
 get_my_ip() {
     local iface="$1"
     local ip

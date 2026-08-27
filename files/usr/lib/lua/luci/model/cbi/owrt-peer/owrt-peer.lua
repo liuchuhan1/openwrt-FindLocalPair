@@ -107,8 +107,23 @@ end
 o = s2:option(DummyValue, "_myip", _("本机IP"))
 function o.cfgvalue(self, section)
     local iface = m:get(section, "iface") or "auto"
+    
     if iface == "auto" then
-        local f = io.popen("ip -o addr show | grep 'inet 10\.' | head -n1 | awk '{print $2, $4}'")
+        -- 第一步：优先查找常见外网/无线客户端接口
+        local preferred = { "wwan", "wan", "wlan0", "wlan1", "phy0-sta0", "phy1-sta0", "wwan0", "wwan1" }
+        for _, pref in ipairs(preferred) do
+            local f = io.popen("ip addr show " .. pref .. " 2>/dev/null | grep 'inet 10\\.' | head -n1 | awk '{print $2}'")
+            if f then
+                local ip = f:read("*l") or ""
+                f:close()
+                if ip ~= "" then
+                    return string.format("接口: %s, IP: %s", pref, ip)
+                end
+            end
+        end
+        
+        -- 第二步：查找所有有 10.x 的接口，排除 VPN/隧道
+        local f = io.popen("ip -o addr show | grep 'inet 10\\.' | grep -v 'wg\\|tun\\|tap' | head -n1 | awk '{print $2, $4}'")
         if f then
             local result = f:read("*l") or ""
             f:close()
@@ -120,6 +135,21 @@ function o.cfgvalue(self, section)
                 end
             end
         end
+        
+        -- 第三步：兜底任何 10.x
+        local f = io.popen("ip -o addr show | grep 'inet 10\\.' | head -n1 | awk '{print $2, $4}'")
+        if f then
+            local result = f:read("*l") or ""
+            f:close()
+            if result ~= "" then
+                local parts = {}
+                for part in result:gmatch("%S+") do table.insert(parts, part) end
+                if #parts >= 2 then
+                    return string.format("接口: %s, IP: %s", parts[1], parts[2])
+                end
+            end
+        end
+        
         return "自动检测中..."
     else
         local f = io.popen("ip addr show " .. iface .. " 2>/dev/null | grep 'inet ' | head -n1 | awk '{print $2}'")
@@ -133,5 +163,4 @@ function o.cfgvalue(self, section)
         return "无法获取IP"
     end
 end
-
 return m
