@@ -41,18 +41,13 @@ log() {
 
 find_iface() {
     local configured="$1"
-    
-    # 如果配置了具体接口且存在，直接用
     if [ "$configured" != "auto" ] && [ -n "$configured" ]; then
         if ip link show "$configured" >/dev/null 2>&1; then
             echo "$configured"
             return 0
         fi
     fi
-    
     local iface
-    
-    # 第一步：优先查找常见外网/无线客户端接口
     for iface in wwan wan wlan0 wlan1 phy0-sta0 phy1-sta0 wwan0 wwan1; do
         if ip link show "$iface" >/dev/null 2>&1; then
             local has10=$(ip addr show "$iface" 2>/dev/null | grep "inet 10\.")
@@ -62,8 +57,6 @@ find_iface() {
             fi
         fi
     done
-    
-    # 第二步：查找所有有 10.x IP 的接口，但排除 VPN/隧道类接口
     for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -v lo | grep -v '^wg' | grep -v '^tun' | grep -v '^tap'); do
         local has10=$(ip addr show "$iface" 2>/dev/null | grep "inet 10\.")
         if [ -n "$has10" ]; then
@@ -71,8 +64,6 @@ find_iface() {
             return 0
         fi
     done
-    
-    # 第三步：兜底，任何有 10.x 的接口
     for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -v lo); do
         local has10=$(ip addr show "$iface" 2>/dev/null | grep "inet 10\.")
         if [ -n "$has10" ]; then
@@ -80,10 +71,9 @@ find_iface() {
             return 0
         fi
     done
-    
-    # 最终兜底 br-lan
     echo "br-lan"
 }
+
 get_my_ip() {
     local iface="$1"
     local ip
@@ -116,29 +106,25 @@ make_auth() {
 verify_auth() {
     local packet="$1"
     local my_ip="$2"
-
-    local prefix=$(echo "$packet" | cut -d'|' -f1)
-    local ver=$(echo "$packet" | cut -d'|' -f2)
+    local prefix ver sender_ip target_ip mode ts sig data expected
+    prefix=$(echo "$packet" | cut -d'|' -f1)
+    ver=$(echo "$packet" | cut -d'|' -f2)
     [ "$prefix" != "OWRT" ] && return 1
     [ "$ver" != "v1" ] && return 1
-
-    local sender_ip=$(echo "$packet" | cut -d'|' -f3)
-    local target_ip=$(echo "$packet" | cut -d'|' -f4)
-    local mode=$(echo "$packet" | cut -d'|' -f5)
-    local ts=$(echo "$packet" | cut -d'|' -f6)
-    local sig=$(echo "$packet" | cut -d'|' -f7)
-
+    sender_ip=$(echo "$packet" | cut -d'|' -f3)
+    target_ip=$(echo "$packet" | cut -d'|' -f4)
+    mode=$(echo "$packet" | cut -d'|' -f5)
+    ts=$(echo "$packet" | cut -d'|' -f6)
+    sig=$(echo "$packet" | cut -d'|' -f7)
     [ "$target_ip" != "0.0.0.0" ] && [ "$target_ip" != "$my_ip" ] && return 1
-
-    local now=$(date +%s)
-    local diff=$((now - ts))
+    local now diff
+    now=$(date +%s)
+    diff=$((now - ts))
     [ "$diff" -lt 0 ] && diff=$((0 - diff))
     [ "$diff" -gt 300 ] && return 1
-
-    local data="${sender_ip}|${target_ip}|${mode}|${ts}"
-    local expected=$(hmac "$data")
+    data="${sender_ip}|${target_ip}|${mode}|${ts}"
+    expected=$(hmac "$data")
     [ "$sig" != "$expected" ] && return 1
-
     echo "${sender_ip}|${target_ip}|${mode}|${ts}|${sig}"
     return 0
 }
@@ -146,13 +132,13 @@ verify_auth() {
 send_udp() {
     local target="$1"
     local payload="$2"
-    (echo "$payload" > /dev/udp/${target}/${PORT}) 2>/dev/null && return 0
-    echo "$payload" | nc -u -w1 "$target" "$PORT" 2>/dev/null
+    echo "$payload" | nc -u -w1 "$target" "$PORT" >/dev/null 2>&1
 }
 
 send_heartbeat() {
     local target="$1"
-    local auth=$(make_auth "$MY_IP" "$target" "$MODE")
+    local auth
+    auth=$(make_auth "$MY_IP" "$target" "$MODE")
     send_udp "$target" "$auth"
     ping -c 1 -W 2 "$target" >/dev/null 2>&1
 }
@@ -160,60 +146,53 @@ send_heartbeat() {
 scan_network() {
     local cidr="${1:-$SCAN_NET}"
     [ -z "$cidr" ] && { log "未配置扫描网段"; return 1; }
-
-    local network=$(echo "$cidr" | cut -d/ -f1)
-    local prefix=$(echo "$cidr" | cut -d/ -f2)
-
-    local o1 o2 o3 o4
-    IFS=. read -r o1 o2 o3 o4 <<< "$network"
-
+    local network prefix o1 o2 o3 o4
+    network=$(echo "$cidr" | cut -d/ -f1)
+    prefix=$(echo "$cidr" | cut -d/ -f2)
+    IFS=. read -r o1 o2 o3 o4 << EOF
+$network
+EOF
     log "扫描网段: $cidr (并发: $CONCUR, ping超时: ${PING_WAIT}s)"
-    local start_ts=$(date +%s)
-    local sent=0
-
-    local host_bits=$((32 - prefix))
-    local total=$((1 << host_bits))
-    local net_addr=$(( (o1 << 24) + (o2 << 16) + (o3 << 8) + o4 ))
-    local mask=$((0xFFFFFFFF << host_bits & 0xFFFFFFFF))
+    local start_ts sent host_bits total net_addr mask i max addr a b c d target jcount
+    start_ts=$(date +%s)
+    sent=0
+    host_bits=$((32 - prefix))
+    total=$((1 << host_bits))
+    net_addr=$(( (o1 << 24) + (o2 << 16) + (o3 << 8) + o4 ))
+    mask=$((0xFFFFFFFF << host_bits & 0xFFFFFFFF))
     net_addr=$((net_addr & mask))
-
-    local i=1
-    local max=$((total - 1))
-
+    i=1
+    max=$((total - 1))
     while [ $i -lt $max ]; do
         [ "$(cat "$STATE_FILE")" != "discovering" ] && { wait; return 0; }
-
-        local addr=$((net_addr + i))
-        local a=$(( (addr >> 24) & 0xFF ))
-        local b=$(( (addr >> 16) & 0xFF ))
-        local c=$(( (addr >> 8) & 0xFF ))
-        local d=$(( addr & 0xFF ))
-        local target="${a}.${b}.${c}.${d}"
-
+        addr=$((net_addr + i))
+        a=$(( (addr >> 24) & 0xFF ))
+        b=$(( (addr >> 16) & 0xFF ))
+        c=$(( (addr >> 8) & 0xFF ))
+        d=$(( addr & 0xFF ))
+        target="${a}.${b}.${c}.${d}"
         [ "$target" = "$MY_IP" ] && { i=$((i + 1)); continue; }
-
         (ping -c 1 -W "$PING_WAIT" "$target" >/dev/null 2>&1) &
         sent=$((sent + 1))
-
-        local jcount=$(jobs -r -p 2>/dev/null | wc -l)
+        jcount=$(jobs -r -p 2>/dev/null | wc -l)
         while [ "$jcount" -ge "$CONCUR" ]; do
-            wait -n 2>/dev/null
+            wait
             jcount=$(jobs -r -p 2>/dev/null | wc -l)
         done
-
         i=$((i + 1))
     done
-
     wait
-    local end_ts=$(date +%s)
-    local elapsed=$((end_ts - start_ts))
+    local end_ts elapsed
+    end_ts=$(date +%s)
+    elapsed=$((end_ts - start_ts))
     log "扫描完成: $cidr, 发送 $sent 个包, 耗时 ${elapsed}秒"
     sleep 5
 }
 
 save_peer_ip() {
     local ip="$1"
-    local old=$(cat "$PEER_IP_FILE" 2>/dev/null)
+    local old
+    old=$(cat "$PEER_IP_FILE" 2>/dev/null)
     if [ "$ip" != "$old" ]; then
         log "更新对方IP: $ip (旧: ${old:-无})"
         echo "$ip" > "$PEER_IP_FILE"
@@ -224,11 +203,11 @@ save_peer_ip() {
 }
 
 count_fail() {
-    local count=$(cat "$PEER_FAIL" 2>/dev/null || echo 0)
+    local count
+    count=$(cat "$PEER_FAIL" 2>/dev/null || echo 0)
     count=$((count + 1))
     echo "$count" > "$PEER_FAIL"
     log "心跳失败: $count / $FAIL"
-
     if [ "$count" -ge "$FAIL" ]; then
         log "连续失败${FAIL}次，判定失联"
         rm -f "$PEER_IP_FILE" "$PEER_LASTSEEN"
@@ -257,12 +236,14 @@ listen_udp_once() {
 start_icmp_listener() {
     (
         while true; do
-            tcpdump -i "$REAL_IFACE" -n -l "icmp and icmp[icmptype] == icmp-echo" 2>/dev/null |             while read -r line; do
-                local src_ip=$(echo "$line" | grep -oE 'IP [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n1 | sed 's/IP //')
+            tcpdump -i "$REAL_IFACE" -n -l "icmp and icmp[icmptype] == icmp-echo" 2>/dev/null | \
+            while read -r line; do
+                local src_ip
+                src_ip=$(echo "$line" | grep -oE 'IP [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n1 | sed 's/IP //')
                 [ -z "$src_ip" ] && continue
                 [ "$src_ip" = "$MY_IP" ] && continue
-
-                local auth=$(make_auth "$MY_IP" "$src_ip" "$MODE")
+                local auth
+                auth=$(make_auth "$MY_IP" "$src_ip" "$MODE")
                 send_udp "$src_ip" "$auth"
             done
             sleep 1
@@ -274,18 +255,15 @@ start_icmp_listener() {
 start_udp_listener() {
     (
         while true; do
-            local payload=$(listen_udp_once)
+            local payload result peer_ip ack
+            payload=$(listen_udp_once)
             [ -z "$payload" ] && continue
-
-            local result
             result=$(verify_auth "$payload" "$MY_IP" 2>/dev/null)
             if [ $? -eq 0 ]; then
-                local peer_ip=$(echo "$result" | cut -d'|' -f1)
+                peer_ip=$(echo "$result" | cut -d'|' -f1)
                 [ -z "$peer_ip" ] && continue
-
                 save_peer_ip "$peer_ip"
-
-                local ack=$(make_auth "$MY_IP" "$peer_ip" "$MODE")
+                ack=$(make_auth "$MY_IP" "$peer_ip" "$MODE")
                 send_udp "$peer_ip" "$ack"
             fi
         done
@@ -298,19 +276,17 @@ run_main() {
     log "模式: $MODE | 本机IP: $MY_IP | 接口: $REAL_IFACE | 端口: $PORT | 心跳: ${HEART}s"
     [ "$MODE" = "manual" ] && [ -n "$PEER_IP" ] && log "静态对端IP: $PEER_IP"
     [ -n "$SCAN_NET" ] && log "扫描网段: $SCAN_NET"
-
-    local ICMP_PID=$(start_icmp_listener)
-    local UDP_PID=$(start_udp_listener)
+    local ICMP_PID UDP_PID
+    ICMP_PID=$(start_icmp_listener)
+    UDP_PID=$(start_udp_listener)
     log "ICMP监听器 PID: $ICMP_PID, UDP监听器 PID: $UDP_PID"
-
     rm -f "$PEER_IP_FILE" "$PEER_LASTSEEN" "$PEER_FAIL" "$STATE_FILE"
     echo 0 > "$PEER_FAIL"
     echo "discovering" > "$STATE_FILE"
-
     while true; do
-        local state=$(cat "$STATE_FILE")
-        local peer_ip=$(cat "$PEER_IP_FILE" 2>/dev/null)
-
+        local state peer_ip
+        state=$(cat "$STATE_FILE")
+        peer_ip=$(cat "$PEER_IP_FILE" 2>/dev/null)
         case "$state" in
             discovering)
                 if [ -n "$peer_ip" ]; then
@@ -321,7 +297,6 @@ run_main() {
                     fi
                     rm -f "$PEER_IP_FILE"
                 fi
-
                 if [ "$MODE" = "manual" ] && [ -n "$PEER_IP" ]; then
                     log "尝试连接静态IP: $PEER_IP"
                     if send_heartbeat "$PEER_IP"; then
@@ -339,30 +314,24 @@ run_main() {
                     scan_network
                 fi
                 ;;
-
             connected)
                 peer_ip=$(cat "$PEER_IP_FILE" 2>/dev/null)
                 if [ -z "$peer_ip" ]; then
                     echo "lost" > "$STATE_FILE"
                     continue
                 fi
-
                 if send_heartbeat "$peer_ip"; then
                     date +%s > "$PEER_LASTSEEN"
                     echo 0 > "$PEER_FAIL"
                 else
-                    if ! count_fail; then
-                        :
-                    fi
+                    count_fail || true
                 fi
                 sleep "$HEART"
                 ;;
-
             lost)
                 log "连接丢失"
                 rm -f "$PEER_IP_FILE" "$PEER_LASTSEEN"
                 echo 0 > "$PEER_FAIL"
-
                 if [ "$MODE" = "manual" ] && [ -n "$PEER_IP" ]; then
                     log "尝试重连静态IP: $PEER_IP"
                     if send_heartbeat "$PEER_IP"; then
@@ -371,7 +340,6 @@ run_main() {
                         continue
                     fi
                 fi
-
                 echo "discovering" > "$STATE_FILE"
                 sleep 2
                 ;;
@@ -380,14 +348,10 @@ run_main() {
 }
 
 check_deps
-
 REAL_IFACE=$(find_iface "$IFACE")
 MY_IP=$(get_my_ip "$REAL_IFACE")
-
 [ -z "$MY_IP" ] && { log "无法获取接口 $REAL_IFACE 的IP"; exit 1; }
 log "接口自动检测: 配置=$IFACE, 实际=$REAL_IFACE, IP=$MY_IP"
-
 killall -9 tcpdump 2>/dev/null
 killall -9 nc 2>/dev/null
-
 run_main
