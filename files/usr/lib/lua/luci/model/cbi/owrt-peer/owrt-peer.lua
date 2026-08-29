@@ -75,12 +75,13 @@ s2.template = "cbi/nullsection"
 
 o = s2:option(DummyValue, "_status", _("当前状态"))
 function o.cfgvalue(self, section)
-    local state = fs.readfile("/tmp/owrt_peer_state") or "unknown"
-    state = state:gsub("%s+", "")
-    local peer_ip = fs.readfile("/tmp/owrt_peer_ip") or ""
-    peer_ip = peer_ip:gsub("%s+", "")
-    local lastseen = fs.readfile("/tmp/owrt_peer_lastseen") or "0"
-    lastseen = tonumber(lastseen:gsub("%s+", "")) or 0
+    local state_raw = fs.readfile("/tmp/owrt_peer_state") or "unknown"
+    local state = state_raw:gsub("%s+", "")
+    local peer_ip_raw = fs.readfile("/tmp/owrt_peer_ip") or ""
+    local peer_ip = peer_ip_raw:gsub("%s+", "")
+    local lastseen_raw = fs.readfile("/tmp/owrt_peer_lastseen") or "0"
+    local lastseen_clean = lastseen_raw:gsub("%s+", "")
+    local lastseen = tonumber(lastseen_clean) or 0
     local now = os.time()
     local diff = now - lastseen
 
